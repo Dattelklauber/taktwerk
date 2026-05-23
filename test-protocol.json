@@ -1,0 +1,96 @@
+{
+  "sample_rate": 44100,
+  "total_duration_s": 132.527,
+  "segments": [
+    {
+      "label": "00 Stille (Baseline)",
+      "start_s": 0.0,
+      "end_s": 5.0,
+      "duration_s": 5.0
+    },
+    {
+      "label": "01 Klicks 100 BPM Viertel (16 Schläge)",
+      "start_s": 5.0,
+      "end_s": 14.6,
+      "duration_s": 9.6
+    },
+    {
+      "label": "02 Stille",
+      "start_s": 14.6,
+      "end_s": 17.6,
+      "duration_s": 3.0
+    },
+    {
+      "label": "03 Klicks 100 BPM Achtel (32 Schläge)",
+      "start_s": 17.6,
+      "end_s": 36.8,
+      "duration_s": 19.2
+    },
+    {
+      "label": "04 Stille",
+      "start_s": 36.8,
+      "end_s": 39.8,
+      "duration_s": 3.0
+    },
+    {
+      "label": "05 Klicks 100 BPM 16tel (64 Schläge)",
+      "start_s": 39.8,
+      "end_s": 78.2,
+      "duration_s": 38.4
+    },
+    {
+      "label": "06 Stille",
+      "start_s": 78.2,
+      "end_s": 81.2,
+      "duration_s": 3.0
+    },
+    {
+      "label": "07 Klicks 80 BPM Viertel (12 Schläge)",
+      "start_s": 81.2,
+      "end_s": 90.2,
+      "duration_s": 9.0
+    },
+    {
+      "label": "08 Stille",
+      "start_s": 90.2,
+      "end_s": 93.2,
+      "duration_s": 3.0
+    },
+    {
+      "label": "09 Klicks 120 BPM Viertel (20 Schläge)",
+      "start_s": 93.2,
+      "end_s": 103.2,
+      "duration_s": 10.0
+    },
+    {
+      "label": "10 Stille",
+      "start_s": 103.2,
+      "end_s": 106.2,
+      "duration_s": 3.0
+    },
+    {
+      "label": "11 Funk 100 BPM (4 Takte)",
+      "start_s": 106.2,
+      "end_s": 115.8,
+      "duration_s": 9.6
+    },
+    {
+      "label": "12 Stille",
+      "start_s": 115.8,
+      "end_s": 118.8,
+      "duration_s": 3.0
+    },
+    {
+      "label": "13 Funk 110 BPM (4 Takte, Drift-Test)",
+      "start_s": 118.8,
+      "end_s": 127.527,
+      "duration_s": 8.727
+    },
+    {
+      "label": "14 Stille (Outro)",
+      "start_s": 127.527,
+      "end_s": 132.527,
+      "duration_s": 5.0
+    }
+  ]
+}

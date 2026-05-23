@@ -28,6 +28,7 @@ Aufruf
 from __future__ import annotations
 
 import argparse
+import json
 import platform
 import sys
 import threading
@@ -349,7 +350,7 @@ class ClickPlayer:
 # ────────────────────────────────────────────────────────────────────────
 def run(target_bpm: float, beats_per_bar: int, latency_ms: float = 0.0,
         no_click: bool = False, listen: bool = False, gui: bool = False,
-        subdivision: float | None = None) -> None:
+        subdivision: float | None = None, record_file: str | None = None) -> None:
     metro = Metronome(bpm=target_bpm, beats_per_bar=beats_per_bar)
     analyzer = Analyzer()
     detector = OnsetDetector(SAMPLE_RATE, BLOCK_SIZE)
@@ -374,6 +375,16 @@ def run(target_bpm: float, beats_per_bar: int, latency_ms: float = 0.0,
     # polyrhythmische Patterns). Fallback bei --subdivision: per-Onset.
     beat_tracker = BeatTracker(target_bpm) if subdivision is None else None
     last_division: float | None = None  # nur fürs Logging des Wechsels
+
+    # Recording: alle Events sammeln, am Ende als JSON schreiben
+    log_events: list[dict] = []
+    t_start_wall = time.time()
+    t_start_mono = time.monotonic()
+
+    def add_event(etype: str, **data) -> None:
+        if record_file is None:
+            return
+        log_events.append({"type": etype, "t": time.monotonic() - t_start_mono, **data})
 
     def audio_cb(indata, frames, _ts, status):
         nonlocal onset_count, last_division
@@ -400,6 +411,10 @@ def run(target_bpm: float, beats_per_bar: int, latency_ms: float = 0.0,
                 bpm = 60000.0 / (last_dt_ms * subdivision)
             else:
                 bpm = None
+
+            add_event("onset", n=onset_count, onset_t=onset_t,
+                      dt_ms=last_dt_ms, bpm=bpm,
+                      buffer_size=len(beat_tracker.onsets) if beat_tracker else 0)
 
             if bpm is None:
                 if plot is None:
@@ -466,6 +481,9 @@ def run(target_bpm: float, beats_per_bar: int, latency_ms: float = 0.0,
     if not listen:
         threading.Thread(target=scheduler, daemon=True).start()
 
+    add_event("start", target_bpm=target_bpm, beats_per_bar=beats_per_bar,
+              sample_rate=SAMPLE_RATE, block_size=BLOCK_SIZE,
+              listen=listen, subdivision=subdivision)
     try:
         with sd.InputStream(channels=1, samplerate=SAMPLE_RATE,
                             blocksize=BLOCK_SIZE, callback=audio_cb):
@@ -478,6 +496,22 @@ def run(target_bpm: float, beats_per_bar: int, latency_ms: float = 0.0,
         pass
     finally:
         metro.running = False
+        add_event("stop", total_onsets=onset_count)
+        if record_file:
+            with open(record_file, "w") as f:
+                json.dump({
+                    "session": {
+                        "target_bpm": target_bpm,
+                        "beats_per_bar": beats_per_bar,
+                        "sample_rate": SAMPLE_RATE,
+                        "block_size": BLOCK_SIZE,
+                        "subdivision": subdivision,
+                        "platform": platform.platform(),
+                        "wall_start": t_start_wall,
+                    },
+                    "log": log_events,
+                }, f, indent=2)
+            print(f"\n[record] {len(log_events)} Events → {record_file}")
         print("\nstopped.")
 
 
@@ -498,9 +532,11 @@ def main() -> None:
                     help="Unterteilung fest vorgeben (1=Viertel, 2=Achtel, 3=Triole, "
                          "4=Sechzehntel, 6=16tel-Triole, 8=32stel). "
                          "Sonst wird automatisch nach 4 Onsets gelockt.")
+    ap.add_argument("--record", type=str, default=None, metavar="FILE",
+                    help="Alle Onsets/Events in JSON-Datei aufzeichnen (für Debugging)")
     args = ap.parse_args()
     run(args.bpm, args.meter, args.latency_ms, args.no_click,
-        args.listen, args.gui, args.subdivision)
+        args.listen, args.gui, args.subdivision, args.record)
 
 
 if __name__ == "__main__":

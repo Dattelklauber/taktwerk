@@ -6,8 +6,9 @@ from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT, TA_JUSTIFY
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak,
-    KeepTogether,
+    KeepTogether, Image,
 )
+from reportlab.lib.utils import ImageReader
 
 OUTPUT = "/Users/guidoport/drum-tempo-monitor/Drum_Tempo_Monitor_Bauanleitung.pdf"
 
@@ -135,6 +136,15 @@ story.append(P(
     "Präzision (Jitter)."
 ))
 
+# ───── Block-Diagramm ─────
+story.append(H1("Übersicht — Block-Diagramm"))
+story.append(P(
+    "Die Komponenten und ihre Verbindungen im Überblick. Mikrofon und Verstärker "
+    "teilen sich den I²S-Bus des Raspberry Pi."
+))
+story.append(Image("block_diagram.png", width=160*mm, height=100*mm))
+story.append(PageBreak())
+
 # ───── 2. Bauteilliste ─────
 story.append(H1("2. Bauteilliste"))
 parts = [
@@ -177,6 +187,49 @@ story.append(P(
 
 story.append(PageBreak())
 
+# ───── Amazon.de Einkaufsliste ─────
+story.append(H1("Einkaufsliste — Amazon.de"))
+story.append(P(
+    "Suchlinks direkt zu Amazon.de. Konkrete Produktbilder und aktuelle "
+    "Preise siehst du nach Klick auf den Link. Falls ein Bauteil dort "
+    "ausverkauft ist, sind Berrybase, Reichelt oder AZ-Delivery gute "
+    "Alternativen mit ähnlichem Sortiment."
+))
+
+def amzn(q):
+    return f'<link href="https://www.amazon.de/s?k={q.replace(" ", "+")}" color="blue">Amazon.de Suche</link>'
+
+shop = [
+    ["#",  "Bauteil",                   "Amazon-Suchbegriff",                    "Link"],
+    ["1",  "Raspberry Pi Zero 2 W",     "raspberry pi zero 2 wh header",         amzn("raspberry pi zero 2 wh header")],
+    ["2",  "microSD-Karte 16 GB A1",    "sandisk ultra 16gb microsd a1",         amzn("sandisk ultra 16gb microsd a1")],
+    ["3",  "SPH0645 MEMS-Mikro",        "adafruit sph0645",                      amzn("adafruit sph0645 i2s microphone")],
+    ["4",  "MAX98357A I²S Amp",         "max98357a i2s amplifier breakout",      amzn("max98357a i2s amplifier")],
+    ["5",  "Lautsprecher 4Ω 3W",        "visaton k36 wp 4 ohm",                  amzn("visaton k36 wp")],
+    ["6",  "ST7789 TFT 2.0\"",          "st7789 2.0 inch spi 240 320",           amzn("st7789 2.0 inch spi 240x320")],
+    ["7",  "Rotary Encoder KY-040",     "ky-040 rotary encoder",                 amzn("ky-040 rotary encoder")],
+    ["8",  "Drucktaster 12mm",          "drucktaster 12mm momentary",            amzn("drucktaster 12mm momentary")],
+    ["9",  "LED weiß ultrahell 5mm",    "led 5mm weiß 20000 mcd",            amzn("led 5mm weiss ultrahell 20000 mcd")],
+    ["10", "2N7000 MOSFET",             "2n7000 mosfet to-92",                   amzn("2n7000 mosfet")],
+    ["11", "Widerstandssortiment",      "widerstand sortiment 1/4w",             amzn("widerstand sortiment 1/4w")],
+    ["12", "Stiftleisten 2.54mm",       "stiftleisten 2.54 mm gerade",           amzn("stiftleisten 2.54mm")],
+    ["13", "Lochrasterplatine 70×50",   "lochrasterplatine 70x50 doppelseitig",  amzn("lochrasterplatine 70x50 doppelseitig")],
+    ["14", "Schaltdraht 0.25mm²",       "schaltdraht set farbig 0.25",           amzn("schaltdraht set 0.25mm2 flexibel")],
+    ["15", "M3 Schrauben + Inserts",    "m3 einschlagmutter set kunststoff",     amzn("m3 einschlagmutter set")],
+    ["16", "Hammond 1591ESBK (Opt B)",  "hammond 1591esbk gehäuse",          amzn("hammond 1591esbk")],
+    ["17", "Manfrotto Super Clamp",     "manfrotto 035 super clamp",             amzn("manfrotto 035 super clamp")],
+    ["18", "USB-Kabel gewinkelt",       "usb micro b kabel gewinkelt 1m",        amzn("usb micro b kabel gewinkelt 1m")],
+]
+story.append(make_table(shop, [10*mm, 38*mm, 65*mm, 32*mm]))
+story.append(Cap(
+    "Tipp: alle Links in einem Tab gleichzeitig öffnen, dann hast du im "
+    "Warenkorb-Schritt eine Sammelübersicht. Für den 3D-Druck-Service "
+    "(Option A Gehäuse) brauchst du keine Amazon-Bestellung — STL-Datei "
+    "an JLCPCB, Treatstock oder Anycubic hochladen."
+))
+
+story.append(PageBreak())
+
 # ───── 4. Verdrahtung ─────
 story.append(H1("3. Verdrahtung (GPIO-Belegung)"))
 story.append(P(
@@ -186,6 +239,9 @@ story.append(P(
     "Pins und ist auf dem Pi mit dem <code>googlevoicehat-soundcard</code>-"
     "Overlay direkt unterstützt (gleicher Aufbau wie das Google AIY Voice Kit)."
 ))
+
+story.append(Image("schematic.png", width=165*mm, height=110*mm))
+story.append(Cap("Schaltplan — Pi-Pin-Belegung aller Module. Genaue Pin-Nummern in den folgenden Tabellen."))
 
 story.append(H2("3.1  I²S-Bus (gemeinsam für Mikro und Verstärker)"))
 i2s = [
