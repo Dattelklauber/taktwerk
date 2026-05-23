@@ -209,8 +209,10 @@ function ifft(real, imag) {
     }
 }
 
-// ─── Onset Detector (HFC spectral flux) ──────────────────────────
+// ─── Onset Detector (HFC + Energy combined, ODER-Logik) ──────────
 class OnsetDetector {
+    static FLOOR_WINDOW = 430;     // ~5 s
+    static FLOOR_FRACTION = 0.10;  // Schwelle min 10% des Max der letzten 5s
     constructor(blockSize, sampleRate) {
         this.blockSize  = blockSize;
         this.sampleRate = sampleRate;
@@ -223,8 +225,13 @@ class OnsetDetector {
         for (let i = 0; i < blockSize; i++) {
             this.window[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (blockSize - 1));
         }
-        this.prevHfc     = new Float32Array(this.nBins);
-        this.fluxHistory = [];
+        this.prevHfc = new Float32Array(this.nBins);
+        this.prevMag = new Float32Array(this.nBins);
+        this.hfcHistory = [];
+        this.engHistory = [];
+        this.hfcMaxWin  = [];
+        this.engMaxWin  = [];
+        this.fluxHistory = this.hfcHistory;  // alias für Diagnose-Panel
     }
 
     process(samples, blockStartT) {
@@ -232,21 +239,43 @@ class OnsetDetector {
         const imag = new Float32Array(this.blockSize);
         for (let i = 0; i < this.blockSize; i++) real[i] = samples[i] * this.window[i];
         fft(real, imag);
-        let flux = 0;
+        let hfcFlux = 0, engFlux = 0;
         for (let i = 0; i < this.nBins; i++) {
             const mag = Math.sqrt(real[i]*real[i] + imag[i]*imag[i]);
+            // HFC-Spektralfluss (frequenz-gewichtet)
             const hfc = this.hfcWeights[i] * mag;
-            const diff = hfc - this.prevHfc[i];
-            if (diff > 0) flux += diff;
+            const dHfc = hfc - this.prevHfc[i];
+            if (dHfc > 0) hfcFlux += dHfc;
             this.prevHfc[i] = hfc;
+            // Energie-Spektralfluss (ungewichtet — für Kick-Drums)
+            const dMag = mag - this.prevMag[i];
+            if (dMag > 0) engFlux += dMag;
+            this.prevMag[i] = mag;
         }
-        this.fluxHistory.push(flux);
-        if (this.fluxHistory.length > FLUX_HISTORY) this.fluxHistory.shift();
-        if (this.fluxHistory.length < 5) return null;
-        const sorted = [...this.fluxHistory].sort((a, b) => a - b);
-        const median = sorted[Math.floor(sorted.length / 2)];
-        const threshold = median * THRESHOLD_FACTOR + 1e-6;
-        if (flux > threshold && (blockStartT - this.lastOnsetT) > MIN_INTERVAL_S) {
+        // Historien
+        this.hfcHistory.push(hfcFlux);
+        if (this.hfcHistory.length > FLUX_HISTORY) this.hfcHistory.shift();
+        this.engHistory.push(engFlux);
+        if (this.engHistory.length > FLUX_HISTORY) this.engHistory.shift();
+        this.hfcMaxWin.push(hfcFlux);
+        if (this.hfcMaxWin.length > OnsetDetector.FLOOR_WINDOW) this.hfcMaxWin.shift();
+        this.engMaxWin.push(engFlux);
+        if (this.engMaxWin.length > OnsetDetector.FLOOR_WINDOW) this.engMaxWin.shift();
+
+        if (this.hfcHistory.length < 5) return null;
+
+        // Adaptive Schwelle mit Untergrenze
+        const hfcSorted = [...this.hfcHistory].sort((a, b) => a - b);
+        const engSorted = [...this.engHistory].sort((a, b) => a - b);
+        const hfcMed = hfcSorted[Math.floor(hfcSorted.length / 2)];
+        const engMed = engSorted[Math.floor(engSorted.length / 2)];
+        const hfcFloor = Math.max(...this.hfcMaxWin) * OnsetDetector.FLOOR_FRACTION;
+        const engFloor = Math.max(...this.engMaxWin) * OnsetDetector.FLOOR_FRACTION;
+        const hfcThresh = Math.max(hfcMed * THRESHOLD_FACTOR, hfcFloor, 1e-6);
+        const engThresh = Math.max(engMed * THRESHOLD_FACTOR, engFloor, 1e-6);
+
+        const triggered = (hfcFlux > hfcThresh) || (engFlux > engThresh);
+        if (triggered && (blockStartT - this.lastOnsetT) > MIN_INTERVAL_S) {
             this.lastOnsetT = blockStartT;
             return blockStartT + this.blockDur / 2;
         }

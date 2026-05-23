@@ -46,25 +46,27 @@ ON_PI = any(arch in platform.machine().lower() for arch in ("arm", "aarch64"))
 
 
 # ────────────────────────────────────────────────────────────────────────
-#  Onset-Detektor (HFC-gewichteter Spektralfluss)
+#  Onset-Detektor (HFC + Energie-Spektralfluss kombiniert)
 # ────────────────────────────────────────────────────────────────────────
 class OnsetDetector:
-    """Erkennt Schlag-Onsets per High-Frequency-Content Spektralfluss.
+    """Erkennt Drum-Onsets durch zwei parallele Detektoren mit ODER-Logik:
 
-    Methode (Standard-Algorithmus für Drum-Onset-Detection):
-    1. Hann-gefenstertes FFT pro Audioblock
-    2. Spektrum mit Frequenz-Index gewichten  → HFC betont Transienten
-    3. Positive Differenz zum vorigen HFC-Spektrum  → Spektralfluss
-    4. Über alle Bins summieren                    → Novelty-Funktion
-    5. Adaptiver Schwellwert aus dem rollenden Median der letzten N Werte
+    - **HFC-Spektralfluss**: Frequenz-gewichteter Fluss
+      → empfindlich für Snare, Hi-Hat, Becken (hochfrequent)
+    - **Energie-Spektralfluss**: ungewichteter Fluss
+      → empfindlich für Kick, Tom (tieffrequent)
 
-    Liefert pro Audioblock entweder None oder den Zeitstempel des Onsets
-    (monotonic seconds, kompatibel mit time.monotonic()).
+    Beide Detektoren haben adaptive Schwellwerte (Median × Faktor) UND
+    eine Schwellwert-Untergrenze (10 % des Max der letzten 5 Sekunden).
+    Die Untergrenze verhindert, dass die Schwelle in Stille-Phasen
+    gegen Null sinkt und Raumrauschen als Onset erkannt wird.
     """
 
-    MIN_INTERVAL_S = 0.12    # Doppel-Trigger unterdrücken (~max 250 BPM bei 8teln)
-    HISTORY_LEN = 20         # rollendes Fenster für Schwellwert
-    THRESHOLD_FACTOR = 4.0   # Faktor über lokalem Median
+    MIN_INTERVAL_S = 0.12          # Doppel-Trigger-Sperre
+    HISTORY_LEN = 20               # Median-Fenster für Schwelle
+    THRESHOLD_FACTOR = 4.0
+    FLOOR_WINDOW_BLOCKS = 430      # ~5 s bei 512 Samples / 44.1 kHz
+    FLOOR_FRACTION = 0.10          # Schwelle nie unter 10 % des Max
 
     def __init__(self, sample_rate: int, block_size: int) -> None:
         self.sample_rate = sample_rate
@@ -74,21 +76,47 @@ class OnsetDetector:
         n_bins = block_size // 2 + 1
         self._hfc_weights = np.arange(n_bins, dtype=np.float32)
         self._window = np.hanning(block_size).astype(np.float32)
-        self._prev_hfc_spec = np.zeros(n_bins, dtype=np.float32)
-        self._flux_history: deque[float] = deque(maxlen=self.HISTORY_LEN)
+        self._prev_hfc = np.zeros(n_bins, dtype=np.float32)
+        self._prev_mag = np.zeros(n_bins, dtype=np.float32)
+        self._hfc_history: deque[float] = deque(maxlen=self.HISTORY_LEN)
+        self._eng_history: deque[float] = deque(maxlen=self.HISTORY_LEN)
+        self._hfc_max_window: deque[float] = deque(maxlen=self.FLOOR_WINDOW_BLOCKS)
+        self._eng_max_window: deque[float] = deque(maxlen=self.FLOOR_WINDOW_BLOCKS)
+        # für Web-App-Kompatibilität / Diagnostik
+        self.fluxHistory = self._hfc_history
 
     def process(self, samples: np.ndarray, block_start_t: float) -> float | None:
         spec = np.abs(np.fft.rfft(samples * self._window)).astype(np.float32)
-        hfc_spec = self._hfc_weights * spec
-        flux = float(np.maximum(0.0, hfc_spec - self._prev_hfc_spec).sum())
-        self._prev_hfc_spec = hfc_spec
-        self._flux_history.append(flux)
 
-        # Warm-up: erst nach 5 Blöcken Schwelle bilden
-        if len(self._flux_history) < 5:
+        # HFC-Spektralfluss (gewichtet mit Frequenz-Index)
+        hfc = self._hfc_weights * spec
+        hfc_flux = float(np.maximum(0.0, hfc - self._prev_hfc).sum())
+        self._prev_hfc = hfc
+
+        # Energie-Spektralfluss (ungewichtete Summe der positiven Differenzen)
+        eng_flux = float(np.maximum(0.0, spec - self._prev_mag).sum())
+        self._prev_mag = spec
+
+        # Historien aktualisieren
+        self._hfc_history.append(hfc_flux)
+        self._eng_history.append(eng_flux)
+        self._hfc_max_window.append(hfc_flux)
+        self._eng_max_window.append(eng_flux)
+
+        if len(self._hfc_history) < 5:
             return None
-        threshold = float(np.median(self._flux_history)) * self.THRESHOLD_FACTOR + 1e-6
-        if flux > threshold and (block_start_t - self._last_onset_t) > self.MIN_INTERVAL_S:
+
+        # Adaptive Schwellen MIT Untergrenze
+        hfc_med = float(np.median(self._hfc_history))
+        eng_med = float(np.median(self._eng_history))
+        hfc_floor = max(self._hfc_max_window) * self.FLOOR_FRACTION
+        eng_floor = max(self._eng_max_window) * self.FLOOR_FRACTION
+        hfc_thresh = max(hfc_med * self.THRESHOLD_FACTOR, hfc_floor, 1e-6)
+        eng_thresh = max(eng_med * self.THRESHOLD_FACTOR, eng_floor, 1e-6)
+
+        # ODER-Trigger: entweder hoher HFC- oder hoher Energie-Sprung
+        triggered = (hfc_flux > hfc_thresh) or (eng_flux > eng_thresh)
+        if triggered and (block_start_t - self._last_onset_t) > self.MIN_INTERVAL_S:
             self._last_onset_t = block_start_t
             return block_start_t + self._block_dur / 2
         return None
