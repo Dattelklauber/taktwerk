@@ -167,6 +167,8 @@ parts = [
     ["16", "Gehäuse",           "3D-Druck PETG  oder  Hammond 1591ESBK",       "1",   "5–30 €"],
     ["17", "Hi-Hat-Halterung",  "integriert (Druck) oder Manfrotto Clamp 035", "1",   "0–28 €"],
     ["18", "USB-Kabel",         "USB-A → micro-USB, 1 m, gewinkelt",           "1",   "4 €"],
+    ["19", "USB-Audio-Adapter (optional)", "z.B. Sabrent AU-MMSA, 3,5 mm Line-In + Mic-In", "1", "10 €"],
+    ["20", "Klinkenkabel TD-27 (optional)", "6,3 mm → 3,5 mm Adapter + Klinke-Klinke 1 m", "1", "6 €"],
 ]
 story.append(make_table(parts, [13*mm, 36*mm, 70*mm, 13*mm, 22*mm]))
 story.append(Spacer(1, 4))
@@ -177,6 +179,66 @@ story.append(Cap(
 ))
 
 # ───── 3. Werkzeug ─────
+story.append(H2("Audio-Eingang: drei Szenarien"))
+story.append(P(
+    "Welche Audio-Quelle benutzt wird, hängt davon ab, womit du spielst. "
+    "Der Algorithmus ist platzhalter-agnostisch — was er bekommt, "
+    "analysiert er. Aber die Signalqualität bestimmt, wie zuverlässig:"
+))
+
+audio_options = [
+    ["Szenario", "Quelle", "Verkabelung", "Empfehlung"],
+    ["Akustisches Set, leise Probe",
+     "Eingebautes MEMS-Mikro",
+     "im Gehäuse, am Hi-Hat-Ständer",
+     "✓ Standard-Bauweise"],
+    ["Elektronisches Set (Roland TD-27 o.ä.)",
+     "Kopfhörer-Out oder OUTPUT L/MONO",
+     "6,3 mm → 3,5 mm → USB-Audio-Adapter",
+     "✓ ✓ Beste Signalqualität, kein Übersteuern"],
+    ["Akustisches Set, laute Bühne (>110 dB)",
+     "MEMS-Mikro + Hardware-Attenuator,\n"
+     "oder Audio-Send vom Mischpult",
+     "Mic mit −12 dB-Spannungsteiler\n"
+     "oder Pult → USB-Audio-Adapter",
+     "△ situationsabhängig"],
+]
+story.append(make_table(audio_options, [42*mm, 38*mm, 42*mm, 30*mm]))
+story.append(Cap(
+    "<b>Empfehlung für Live-Einsatz:</b> wann immer möglich Kabel-Verbindung "
+    "zum elektronischen Schlagzeug. Kein Übersteuern, keine Verzögerung "
+    "durch Luft-Laufzeit, kein Übersprechen vom Rest der Band. Das "
+    "eingebaute Mikrofon bleibt aktiv als Backup und für akustische "
+    "Proben."
+))
+
+story.append(H2("Übersteuerschutz und Pegelkontrolle"))
+story.append(P(
+    "Auf lauten Bühnen kann der Mic-ADC clippen (Sättigung über 0 dBFS). "
+    "Die Software überwacht den Eingangs-Pegel kontinuierlich:"
+))
+clip_features = [
+    ["Software-Schutz", "Wirkung"],
+    ["Live-Pegel-Meter im Display",
+     "Bar oben zeigt Peak des letzten Audio-Blocks"],
+    ["Clipping-Warnung",
+     "Roter Blinker ab >5 Blöcken (~60 ms) mit Peak >0,95"],
+    ["Log-Eintrag pro Clip-Ereignis",
+     "Beim Aufzeichnen mit --record wird jeder Clip protokolliert"],
+    ["Quasi-Limiter durch HFC-Detektor",
+     "Verzerrungen erhöhen HFC, der Detektor adaptiert; "
+     "Onsets bleiben erkennbar"],
+]
+story.append(make_table(clip_features, [50*mm, 100*mm]))
+story.append(P(
+    "<b>Hardware-Schutz für SPH0645</b> (Max 120 dB SPL): wenn die "
+    "Bühnenlautstärke regelmäßig clippt, einfacher Spannungsteiler vor "
+    "dem Mikro-Modul (zwei Widerstände, R1=2,2 kΩ, R2=1 kΩ am VDD) "
+    "reduziert die effektive Sensitivität um ~10 dB. Alternative: "
+    "Mikro durch ICS-43434 ersetzen (auch I²S, kompatibles Pinout, "
+    "etwas höheres SPL-Limit)."
+))
+
 story.append(H2("Benötigtes Werkzeug"))
 story.append(P(
     "Lötkolben (temperaturgeregelt, 30–60 W), Lötzinn 0,5 mm, "
@@ -219,6 +281,8 @@ shop = [
     ["16", "Hammond 1591ESBK (Opt B)",  "hammond 1591esbk gehäuse",          amzn("hammond 1591esbk")],
     ["17", "Manfrotto Super Clamp",     "manfrotto 035 super clamp",             amzn("manfrotto 035 super clamp")],
     ["18", "USB-Kabel gewinkelt",       "usb micro b kabel gewinkelt 1m",        amzn("usb micro b kabel gewinkelt 1m")],
+    ["19", "USB-Audio-Adapter Line-In", "sabrent usb audio adapter line in",     amzn("sabrent usb audio adapter line in")],
+    ["20", "Klinkenkabel + Adapter",    "6.3mm 3.5mm klinkenkabel 1m",           amzn("6.3mm 3.5mm klinkenkabel adapter 1m")],
 ]
 story.append(make_table(shop, [10*mm, 38*mm, 65*mm, 32*mm]))
 story.append(Cap(

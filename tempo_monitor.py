@@ -338,8 +338,9 @@ class ClickPlayer:
 
     def __init__(self):
         self.sr = SAMPLE_RATE
-        self.click_normal = self._make_click(freq=1200, dur_ms=15, gain=0.5)
-        self.click_accent = self._make_click(freq=1800, dur_ms=25, gain=0.7)
+        # Lauterer, broadband Klick — gut hörbar auch über Mac-Lautsprecher
+        self.click_normal = self._make_click(freq=1200, dur_ms=40, gain=0.9)
+        self.click_accent = self._make_click(freq=1800, dur_ms=60, gain=1.0)
         self.led = None
         if ON_PI:
             try:
@@ -351,13 +352,17 @@ class ClickPlayer:
     def _make_click(self, freq: int, dur_ms: int, gain: float) -> np.ndarray:
         n = int(self.sr * dur_ms / 1000)
         t = np.arange(n) / self.sr
-        env = np.exp(-t * 80)
-        return (gain * np.sin(2 * np.pi * freq * t) * env).astype(np.float32)
+        env = np.exp(-t * 40)  # langsamerer Decay → mehr Substanz
+        # Sinus + Oberton + leichter Rausch-Attack → hörbarer als reiner Sinus
+        sig = (np.sin(2 * np.pi * freq * t)
+               + np.sin(2 * np.pi * freq * 1.5 * t) * 0.4)
+        return (gain * sig * env).astype(np.float32)
 
     def play(self, accent: bool = False) -> None:
         wave = self.click_accent if accent else self.click_normal
-        # blocking=False → kommt sofort zurück, Klick spielt im Hintergrund
         sd.play(wave, self.sr, blocking=False)
+        sys.stdout.write("● " if accent else ". ")
+        sys.stdout.flush()
         if self.led is not None:
             self.led.on()
             threading.Timer(0.06 if accent else 0.03, self.led.off).start()
