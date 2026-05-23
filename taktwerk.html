@@ -55,6 +55,31 @@ canvas { width: 100%; height: 100%; display: block; }
     position: absolute; bottom: 16px; right: 20px;
     font-size: 13px; color: #555;
 }
+#diag {
+    background: #1a1a1a; padding: 10px 16px;
+    border-top: 1px solid #2a2a2a;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 13px; color: #ccc;
+    display: flex; flex-direction: column; gap: 6px;
+}
+#diag .row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+#diag .badge { padding: 2px 8px; border-radius: 4px; background: #2c2c2c; }
+#diag .meter-bg {
+    background: #2c2c2c; width: 200px; height: 14px; border-radius: 7px;
+    overflow: hidden; position: relative;
+}
+#diag .meter-fill {
+    background: linear-gradient(90deg, #4a9 0%, #fa3 70%, #f44 100%);
+    height: 100%; width: 0; transition: width 0.05s linear;
+}
+#diag button {
+    padding: 6px 14px; font-size: 13px; background: #444;
+    border-radius: 4px; min-width: 0; font-weight: 500;
+}
+#diag button.marker { background: #2c5a8a; }
+#diag .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+#diag .dot.on  { background: #4a9; }
+#diag .dot.off { background: #f44; }
 @media (max-width: 600px) {
     #bpm-display { font-size: 42px; }
     #delta-display { font-size: 18px; }
@@ -88,6 +113,29 @@ canvas { width: 100%; height: 100%; display: block; }
         </div>
         <div id="status">bereit</div>
         <div id="hint">Taktwerk · Web</div>
+    </div>
+    <div id="diag">
+        <div class="row">
+            <span><span id="audio-dot" class="dot off"></span> Audio:&nbsp;<span id="audio-state" class="badge">closed</span></span>
+            <span>Mic:</span>
+            <div class="meter-bg"><div id="mic-meter" class="meter-fill"></div></div>
+            <span id="mic-peak" class="badge">0.000</span>
+        </div>
+        <div class="row">
+            <span>Flux: <span id="flux-val" class="badge">0</span></span>
+            <span>Schwelle: <span id="threshold-val" class="badge">0</span></span>
+            <span>Onsets: <span id="onset-count-d" class="badge">0</span></span>
+            <span>BPM est: <span id="last-bpm" class="badge">--</span></span>
+            <span>Puffer: <span id="buffer-size" class="badge">0</span></span>
+            <span>Verworfen: <span id="rejected" class="badge">0</span></span>
+        </div>
+        <div class="row">
+            <button id="add-marker" class="marker">+ Marker</button>
+            <span>Marker: <span id="marker-count" class="badge">0</span></span>
+            <button id="export-log">Log exportieren</button>
+            <button id="clear-log">Log löschen</button>
+            <span id="log-info" class="badge">0 Events</span>
+        </div>
     </div>
 </div>
 
@@ -261,6 +309,53 @@ let recentBpms = [], plotData = [];
 let isRunning = false, onsetCount = 0;
 let actualSampleRate = SAMPLE_RATE;
 
+// ─── Diagnostik ──────────────────────────────────────────────────
+const diag = {
+    log: [],            // alle Events: {type, t, ...}
+    micPeak: 0,         // letzter Block-Peak
+    lastFlux: 0,
+    lastThreshold: 0,
+    rejectedCount: 0,
+    markerCount: 0,
+    blockCount: 0,
+    BLOCK_LOG_EVERY: 10,// nur jeder 10. Block geloggt → Datei-Größe ok
+};
+function logEvent(type, data = {}) {
+    diag.log.push({ type, t: audioCtx ? audioCtx.currentTime : 0,
+                    wall: Date.now() / 1000, ...data });
+}
+function addMarker() {
+    diag.markerCount++;
+    logEvent('marker', { n: diag.markerCount });
+    document.getElementById('marker-count').textContent = diag.markerCount;
+}
+function exportLog() {
+    const sessionInfo = {
+        userAgent: navigator.userAgent,
+        sampleRate: actualSampleRate,
+        blockSize: BLOCK_SIZE,
+        targetBpm: parseFloat(document.getElementById('target-bpm').value),
+        meter: parseInt(document.getElementById('meter').value),
+        timestamp: new Date().toISOString(),
+    };
+    const blob = new Blob(
+        [JSON.stringify({ session: sessionInfo, log: diag.log }, null, 2)],
+        { type: 'application/json' }
+    );
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `taktwerk-log-${Date.now()}.json`;
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 100);
+}
+function clearLog() {
+    diag.log = []; diag.markerCount = 0; diag.rejectedCount = 0;
+    document.getElementById('marker-count').textContent = '0';
+    document.getElementById('rejected').textContent = '0';
+    document.getElementById('log-info').textContent = '0 Events';
+}
+
 // ─── Audio Setup ─────────────────────────────────────────────────
 async function startAudio() {
     if (isRunning) { stopAudio(); return; }
@@ -292,20 +387,56 @@ async function startAudio() {
             const samples = e.inputBuffer.getChannelData(0);
             const now = audioCtx.currentTime;
             const blockStart = now - BLOCK_SIZE / actualSampleRate;
+
+            // Diagnose: Block-Peak (für Mic-Meter)
+            let peak = 0;
+            for (let i = 0; i < samples.length; i++) {
+                const a = Math.abs(samples[i]); if (a > peak) peak = a;
+            }
+            diag.micPeak = peak;
+            diag.blockCount++;
+
             const onsetT = detector.process(samples, blockStart);
+            diag.lastFlux = detector.fluxHistory.length
+                ? detector.fluxHistory[detector.fluxHistory.length - 1] : 0;
+            if (detector.fluxHistory.length >= 5) {
+                const sorted = [...detector.fluxHistory].sort((a, b) => a - b);
+                const median = sorted[Math.floor(sorted.length / 2)];
+                diag.lastThreshold = median * THRESHOLD_FACTOR + 1e-6;
+            }
+
+            // Jeden 10. Block einen Schnappschuss loggen (sonst zu viele Daten)
+            if (diag.blockCount % diag.BLOCK_LOG_EVERY === 0) {
+                logEvent('block', {
+                    peak: +peak.toFixed(4),
+                    flux: +diag.lastFlux.toFixed(2),
+                    threshold: +diag.lastThreshold.toFixed(2),
+                });
+            }
+
             if (onsetT === null) return;
             onsetCount++;
             const bpm = beatTracker.add(onsetT);
+            logEvent('onset', {
+                n: onsetCount,
+                flux: +diag.lastFlux.toFixed(2),
+                threshold: +diag.lastThreshold.toFixed(2),
+                bpm: bpm ? +bpm.toFixed(2) : null,
+                bufferSize: beatTracker.onsets.length,
+            });
+
             if (bpm === null) {
-                setStatus(`warming up (${onsetCount} Onsets, ${Math.min(onsetCount*100/8,100)|0}%)`);
+                setStatus(`warming up (${onsetCount} Onsets)`);
                 return;
             }
-            // Ausreißer-Filter: Schätzungen, die stark vom letzten Median
-            // abweichen, verwerfen (typisch bei Nebenpeak der Autokorrelation)
             if (recentBpms.length >= 4) {
                 const sorted = [...recentBpms].sort((a, b) => a - b);
                 const med = sorted[Math.floor(sorted.length / 2)];
-                if (Math.abs(bpm - med) > OUTLIER_BPM) return;
+                if (Math.abs(bpm - med) > OUTLIER_BPM) {
+                    diag.rejectedCount++;
+                    logEvent('rejected', { bpm: +bpm.toFixed(2), median: +med.toFixed(2) });
+                    return;
+                }
             }
             recentBpms.push(bpm);
             if (recentBpms.length > SMOOTH_N) recentBpms.shift();
@@ -330,6 +461,12 @@ async function startAudio() {
         document.getElementById('target-bpm').disabled = true;
         document.getElementById('meter').disabled = true;
         setStatus(`läuft (${actualSampleRate} Hz)`);
+        logEvent('start', {
+            sampleRate: actualSampleRate,
+            blockSize: BLOCK_SIZE,
+            targetBpm: targetBpm,
+            ctxState: audioCtx.state,
+        });
     } catch (err) {
         alert('Fehler beim Audio-Zugriff: ' + (err.message || err));
         setStatus('Fehler: ' + (err.message || err));
@@ -337,6 +474,7 @@ async function startAudio() {
 }
 
 function stopAudio() {
+    logEvent('stop', { totalOnsets: onsetCount });
     if (scriptNode) { try { scriptNode.disconnect(); } catch (e) {} scriptNode = null; }
     if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
     if (audioCtx)   { audioCtx.close(); audioCtx = null; }
@@ -444,6 +582,34 @@ function render() {
 requestAnimationFrame(render);
 
 document.getElementById('start').addEventListener('click', startAudio);
+document.getElementById('add-marker').addEventListener('click', addMarker);
+document.getElementById('export-log').addEventListener('click', exportLog);
+document.getElementById('clear-log').addEventListener('click', clearLog);
+
+// Diagnose-Panel live updaten (10 Hz, separat vom Plot-Loop)
+setInterval(() => {
+    const audioDot = document.getElementById('audio-dot');
+    const audioState = document.getElementById('audio-state');
+    if (audioCtx) {
+        audioState.textContent = audioCtx.state;
+        audioDot.className = 'dot ' + (audioCtx.state === 'running' ? 'on' : 'off');
+    } else {
+        audioState.textContent = 'closed';
+        audioDot.className = 'dot off';
+    }
+    // Mic meter (peak 0–1 → 0–100%, mit Log-Skala für bessere Sichtbarkeit)
+    const peakPct = Math.min(100, Math.log10(1 + diag.micPeak * 99) * 50);
+    document.getElementById('mic-meter').style.width = peakPct + '%';
+    document.getElementById('mic-peak').textContent = diag.micPeak.toFixed(4);
+    document.getElementById('flux-val').textContent = diag.lastFlux.toFixed(1);
+    document.getElementById('threshold-val').textContent = diag.lastThreshold.toFixed(1);
+    document.getElementById('onset-count-d').textContent = onsetCount;
+    document.getElementById('rejected').textContent = diag.rejectedCount;
+    document.getElementById('buffer-size').textContent = beatTracker ? beatTracker.onsets.length : 0;
+    const lastBpm = recentBpms.length ? recentBpms[recentBpms.length - 1].toFixed(1) : '--';
+    document.getElementById('last-bpm').textContent = lastBpm;
+    document.getElementById('log-info').textContent = `${diag.log.length} Events`;
+}, 100);
 </script>
 </body>
 </html>
