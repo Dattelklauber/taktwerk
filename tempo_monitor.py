@@ -65,8 +65,6 @@ class OnsetDetector:
     MIN_INTERVAL_S = 0.12          # Doppel-Trigger-Sperre
     HISTORY_LEN = 20               # Median-Fenster für Schwelle
     THRESHOLD_FACTOR = 4.0
-    FLOOR_WINDOW_BLOCKS = 430      # ~5 s bei 512 Samples / 44.1 kHz
-    FLOOR_FRACTION = 0.10          # Schwelle nie unter 10 % des Max
 
     def __init__(self, sample_rate: int, block_size: int) -> None:
         self.sample_rate = sample_rate
@@ -80,41 +78,32 @@ class OnsetDetector:
         self._prev_mag = np.zeros(n_bins, dtype=np.float32)
         self._hfc_history: deque[float] = deque(maxlen=self.HISTORY_LEN)
         self._eng_history: deque[float] = deque(maxlen=self.HISTORY_LEN)
-        self._hfc_max_window: deque[float] = deque(maxlen=self.FLOOR_WINDOW_BLOCKS)
-        self._eng_max_window: deque[float] = deque(maxlen=self.FLOOR_WINDOW_BLOCKS)
         # für Web-App-Kompatibilität / Diagnostik
         self.fluxHistory = self._hfc_history
 
     def process(self, samples: np.ndarray, block_start_t: float) -> float | None:
         spec = np.abs(np.fft.rfft(samples * self._window)).astype(np.float32)
 
-        # HFC-Spektralfluss (gewichtet mit Frequenz-Index)
+        # HFC-Spektralfluss (gewichtet mit Frequenz-Index) → Snare, Hi-Hat, Becken
         hfc = self._hfc_weights * spec
         hfc_flux = float(np.maximum(0.0, hfc - self._prev_hfc).sum())
         self._prev_hfc = hfc
 
-        # Energie-Spektralfluss (ungewichtete Summe der positiven Differenzen)
+        # Energie-Spektralfluss (ungewichtete Summe) → Kick, Tom
         eng_flux = float(np.maximum(0.0, spec - self._prev_mag).sum())
         self._prev_mag = spec
 
-        # Historien aktualisieren
         self._hfc_history.append(hfc_flux)
         self._eng_history.append(eng_flux)
-        self._hfc_max_window.append(hfc_flux)
-        self._eng_max_window.append(eng_flux)
 
         if len(self._hfc_history) < 5:
             return None
 
-        # Adaptive Schwellen MIT Untergrenze
-        hfc_med = float(np.median(self._hfc_history))
-        eng_med = float(np.median(self._eng_history))
-        hfc_floor = max(self._hfc_max_window) * self.FLOOR_FRACTION
-        eng_floor = max(self._eng_max_window) * self.FLOOR_FRACTION
-        hfc_thresh = max(hfc_med * self.THRESHOLD_FACTOR, hfc_floor, 1e-6)
-        eng_thresh = max(eng_med * self.THRESHOLD_FACTOR, eng_floor, 1e-6)
+        # Adaptive Schwellen — kein Floor mehr, der hat mehr geschadet als geholfen
+        hfc_thresh = float(np.median(self._hfc_history)) * self.THRESHOLD_FACTOR + 1e-6
+        eng_thresh = float(np.median(self._eng_history)) * self.THRESHOLD_FACTOR + 1e-6
 
-        # ODER-Trigger: entweder hoher HFC- oder hoher Energie-Sprung
+        # ODER-Trigger
         triggered = (hfc_flux > hfc_thresh) or (eng_flux > eng_thresh)
         if triggered and (block_start_t - self._last_onset_t) > self.MIN_INTERVAL_S:
             self._last_onset_t = block_start_t
@@ -207,8 +196,9 @@ class BeatTracker:
         self._target_bin = int(self.target_period / self.BIN_SIZE_S)
         self._lo = int(self.target_period * (1 - self.TEMPO_SEARCH_PCT) / self.BIN_SIZE_S)
         self._hi = int(self.target_period * (1 + self.TEMPO_SEARCH_PCT) / self.BIN_SIZE_S)
-        # Gauss-Breite: ein Viertel des Suchbereichs, gleichmäßiger Abfall
-        self._sigma = max(1.0, (self._hi - self._lo) / 4.0)
+        # Engere Gauss-Breite: 1/8 des Suchbereichs → starker Pull zum Soll,
+        # verhindert Octave-Errors bei dichten Onset-Strömen (Funk-Beats)
+        self._sigma = max(1.0, (self._hi - self._lo) / 8.0)
         self.onsets: deque[float] = deque()
 
     def add(self, t: float) -> float | None:
@@ -378,7 +368,8 @@ class ClickPlayer:
 # ────────────────────────────────────────────────────────────────────────
 def run(target_bpm: float, beats_per_bar: int, latency_ms: float = 0.0,
         no_click: bool = False, listen: bool = False, gui: bool = False,
-        subdivision: float | None = None, record_file: str | None = None) -> None:
+        subdivision: float | None = None, record_file: str | None = None,
+        countin_bars: int = 1) -> None:
     metro = Metronome(bpm=target_bpm, beats_per_bar=beats_per_bar)
     analyzer = Analyzer()
     detector = OnsetDetector(SAMPLE_RATE, BLOCK_SIZE)
@@ -483,16 +474,20 @@ def run(target_bpm: float, beats_per_bar: int, latency_ms: float = 0.0,
               f"Δ {dev_ms:+6.1f} ms [{analyzer.zone(dev_ms)}]")
 
     def scheduler():
-        next_beat = 0
-        while metro.running:
-            t_target = metro.expected_beat_time(next_beat)
+        # Spielt nur den Count-In (N Takte * Schläge/Takt), dann hört auf.
+        # Das eigentliche Tracking läuft unabhängig weiter.
+        countin_beats = countin_bars * metro.beats_per_bar
+        for beat_idx in range(countin_beats):
+            if not metro.running:
+                return
+            t_target = metro.expected_beat_time(beat_idx)
             sleep_for = t_target - time.monotonic()
             if sleep_for > 0:
                 time.sleep(sleep_for)
-            accent = (next_beat % metro.beats_per_bar == 0)
+            accent = (beat_idx % metro.beats_per_bar == 0)
             if not no_click and click is not None:
                 click.play(accent=accent)
-            next_beat += 1
+        print(f"[countin] {countin_bars} Takt(e) gespielt — ab jetzt nur noch visuell")
 
     platform_name = "Raspberry Pi" if ON_PI else "dev (Mac/Linux)"
     print("─" * 60)
@@ -506,7 +501,9 @@ def run(target_bpm: float, beats_per_bar: int, latency_ms: float = 0.0,
     print(" Stop mit Ctrl-C")
     print("─" * 60)
 
-    if not listen:
+    # Count-In nur dann starten, wenn nicht reiner Listen-Modus
+    # und countin_bars > 0
+    if not listen and countin_bars > 0:
         threading.Thread(target=scheduler, daemon=True).start()
 
     add_event("start", target_bpm=target_bpm, beats_per_bar=beats_per_bar,
@@ -562,9 +559,12 @@ def main() -> None:
                          "Sonst wird automatisch nach 4 Onsets gelockt.")
     ap.add_argument("--record", type=str, default=None, metavar="FILE",
                     help="Alle Onsets/Events in JSON-Datei aufzeichnen (für Debugging)")
+    ap.add_argument("--countin", type=int, default=1, metavar="N",
+                    help="Anzahl Count-In-Takte vor dem Spielen (Default: 1, "
+                         "0 = ganz ohne Klick)")
     args = ap.parse_args()
     run(args.bpm, args.meter, args.latency_ms, args.no_click,
-        args.listen, args.gui, args.subdivision, args.record)
+        args.listen, args.gui, args.subdivision, args.record, args.countin)
 
 
 if __name__ == "__main__":

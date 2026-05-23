@@ -104,6 +104,10 @@ canvas { width: 100%; height: 100%; display: block; }
                 <option value="7">7/8</option>
             </select>
         </label>
+        <label>Count-In:
+            <input id="countin" type="number" min="0" max="4" step="1" value="1"
+                   style="width:60px"> Takt(e)
+        </label>
     </div>
     <div id="plot-container">
         <canvas id="plot"></canvas>
@@ -211,8 +215,6 @@ function ifft(real, imag) {
 
 // ─── Onset Detector (HFC + Energy combined, ODER-Logik) ──────────
 class OnsetDetector {
-    static FLOOR_WINDOW = 430;     // ~5 s
-    static FLOOR_FRACTION = 0.10;  // Schwelle min 10% des Max der letzten 5s
     constructor(blockSize, sampleRate) {
         this.blockSize  = blockSize;
         this.sampleRate = sampleRate;
@@ -229,8 +231,6 @@ class OnsetDetector {
         this.prevMag = new Float32Array(this.nBins);
         this.hfcHistory = [];
         this.engHistory = [];
-        this.hfcMaxWin  = [];
-        this.engMaxWin  = [];
         this.fluxHistory = this.hfcHistory;  // alias für Diagnose-Panel
     }
 
@@ -242,37 +242,27 @@ class OnsetDetector {
         let hfcFlux = 0, engFlux = 0;
         for (let i = 0; i < this.nBins; i++) {
             const mag = Math.sqrt(real[i]*real[i] + imag[i]*imag[i]);
-            // HFC-Spektralfluss (frequenz-gewichtet)
             const hfc = this.hfcWeights[i] * mag;
             const dHfc = hfc - this.prevHfc[i];
             if (dHfc > 0) hfcFlux += dHfc;
             this.prevHfc[i] = hfc;
-            // Energie-Spektralfluss (ungewichtet — für Kick-Drums)
             const dMag = mag - this.prevMag[i];
             if (dMag > 0) engFlux += dMag;
             this.prevMag[i] = mag;
         }
-        // Historien
         this.hfcHistory.push(hfcFlux);
         if (this.hfcHistory.length > FLUX_HISTORY) this.hfcHistory.shift();
         this.engHistory.push(engFlux);
         if (this.engHistory.length > FLUX_HISTORY) this.engHistory.shift();
-        this.hfcMaxWin.push(hfcFlux);
-        if (this.hfcMaxWin.length > OnsetDetector.FLOOR_WINDOW) this.hfcMaxWin.shift();
-        this.engMaxWin.push(engFlux);
-        if (this.engMaxWin.length > OnsetDetector.FLOOR_WINDOW) this.engMaxWin.shift();
 
         if (this.hfcHistory.length < 5) return null;
 
-        // Adaptive Schwelle mit Untergrenze
         const hfcSorted = [...this.hfcHistory].sort((a, b) => a - b);
         const engSorted = [...this.engHistory].sort((a, b) => a - b);
         const hfcMed = hfcSorted[Math.floor(hfcSorted.length / 2)];
         const engMed = engSorted[Math.floor(engSorted.length / 2)];
-        const hfcFloor = Math.max(...this.hfcMaxWin) * OnsetDetector.FLOOR_FRACTION;
-        const engFloor = Math.max(...this.engMaxWin) * OnsetDetector.FLOOR_FRACTION;
-        const hfcThresh = Math.max(hfcMed * THRESHOLD_FACTOR, hfcFloor, 1e-6);
-        const engThresh = Math.max(engMed * THRESHOLD_FACTOR, engFloor, 1e-6);
+        const hfcThresh = hfcMed * THRESHOLD_FACTOR + 1e-6;
+        const engThresh = engMed * THRESHOLD_FACTOR + 1e-6;
 
         const triggered = (hfcFlux > hfcThresh) || (engFlux > engThresh);
         if (triggered && (blockStartT - this.lastOnsetT) > MIN_INTERVAL_S) {
@@ -296,7 +286,9 @@ class BeatTracker {
         this.targetBin    = Math.round(this.targetPeriod / BeatTracker.BIN_SIZE);
         this.lo = Math.round(this.targetPeriod * (1 - BeatTracker.SEARCH_PCT) / BeatTracker.BIN_SIZE);
         this.hi = Math.round(this.targetPeriod * (1 + BeatTracker.SEARCH_PCT) / BeatTracker.BIN_SIZE);
-        this.sigma  = Math.max(1, (this.hi - this.lo) / 4);
+        // Enger Gauss: 1/8 des Suchbereichs → starker Pull zum Soll,
+        // verhindert Octave-Errors bei Funk-Patterns
+        this.sigma  = Math.max(1, (this.hi - this.lo) / 8);
         this.onsets = [];
     }
 
@@ -413,6 +405,30 @@ function clearLog() {
     document.getElementById('log-info').textContent = '0 Events';
 }
 
+// ─── Count-In: spielt N Takte Klick und schedult sie präzise vor dem Recording
+function playCountIn(audioCtx, targetBpm, beatsPerBar, nBars) {
+    const beatInterval = 60.0 / targetBpm;
+    const startTime = audioCtx.currentTime + 0.1; // 100ms Vorlauf
+    const totalBeats = beatsPerBar * nBars;
+    for (let i = 0; i < totalBeats; i++) {
+        const isAccent = (i % beatsPerBar === 0);
+        const beatT = startTime + i * beatInterval;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.frequency.value = isAccent ? 1800 : 1200;
+        osc.type = "sine";
+        gain.gain.setValueAtTime(0, beatT);
+        gain.gain.linearRampToValueAtTime(0.4, beatT + 0.001);
+        gain.gain.exponentialRampToValueAtTime(0.001,
+            beatT + (isAccent ? 0.04 : 0.025));
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start(beatT);
+        osc.stop(beatT + 0.06);
+    }
+    // Wann der Count-In zu Ende ist (für Status-Anzeige)
+    return startTime + totalBeats * beatInterval;
+}
+
 // ─── Audio Setup ─────────────────────────────────────────────────
 async function startAudio() {
     if (isRunning) { stopAudio(); return; }
@@ -511,12 +527,22 @@ async function startAudio() {
         source.connect(scriptNode);
         scriptNode.connect(silent).connect(audioCtx.destination);
 
+        // Count-In abspielen falls gewünscht
+        const countinBars = parseInt(document.getElementById('countin').value) || 0;
+        const meter = parseInt(document.getElementById('meter').value);
+        if (countinBars > 0) {
+            const endT = playCountIn(audioCtx, targetBpm, meter, countinBars);
+            setStatus(`Count-In: ${countinBars} Takt(e) — dann läuft's`);
+            logEvent('countin', { bars: countinBars, until: endT });
+        }
+
         isRunning = true;
         const btn = document.getElementById('start');
         btn.textContent = 'Stop';
         btn.classList.add('running');
         document.getElementById('target-bpm').disabled = true;
         document.getElementById('meter').disabled = true;
+        document.getElementById('countin').disabled = true;
         setStatus(`läuft (${actualSampleRate} Hz)`);
         logEvent('start', {
             sampleRate: actualSampleRate,
@@ -541,6 +567,7 @@ function stopAudio() {
     btn.classList.remove('running');
     document.getElementById('target-bpm').disabled = false;
     document.getElementById('meter').disabled = false;
+    document.getElementById('countin').disabled = false;
     setStatus('gestoppt');
 }
 
