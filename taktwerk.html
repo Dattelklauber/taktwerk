@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Taktwerk</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+html, body { width: 100%; height: 100%; overflow: hidden; }
+body {
+    background: #0a0a0a;
+    color: white;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+}
+#app { width: 100vw; height: 100vh; display: flex; flex-direction: column; }
+#controls {
+    padding: 12px 16px; background: #1a1a1a;
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    border-bottom: 1px solid #2a2a2a;
+}
+#controls label { font-size: 16px; color: #ddd; display: inline-flex; align-items: center; gap: 8px; }
+input[type=number], select {
+    background: #2c2c2c; color: white; border: 1px solid #444;
+    padding: 8px 12px; border-radius: 6px; font-size: 17px;
+    min-width: 80px;
+}
+input[type=number] { -moz-appearance: textfield; }
+button {
+    background: #2c5a8a; color: white; border: none;
+    padding: 12px 28px; border-radius: 6px;
+    font-size: 17px; font-weight: 600; cursor: pointer;
+    -webkit-touch-callout: none; user-select: none;
+    min-width: 100px;
+}
+button:hover { background: #3a72ab; }
+button.running { background: #8a3232; }
+button:disabled { background: #444; cursor: not-allowed; opacity: 0.5; }
+#plot-container { flex: 1; position: relative; min-height: 0; }
+canvas { width: 100%; height: 100%; display: block; }
+#info {
+    position: absolute; top: 20px; left: 20px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    pointer-events: none;
+}
+#bpm-display { font-size: 56px; font-weight: 700; line-height: 1.0; }
+#delta-display { font-size: 22px; margin-top: 10px; opacity: 0.9; }
+#status {
+    position: absolute; bottom: 16px; left: 20px;
+    font-size: 13px; color: #888;
+    font-family: ui-monospace, monospace;
+}
+#hint {
+    position: absolute; bottom: 16px; right: 20px;
+    font-size: 13px; color: #555;
+}
+@media (max-width: 600px) {
+    #bpm-display { font-size: 42px; }
+    #delta-display { font-size: 18px; }
+    #info { top: 12px; left: 12px; }
+}
+</style>
+</head>
+<body>
+<div id="app">
+    <div id="controls">
+        <button id="start">Start</button>
+        <label>Soll BPM
+            <input id="target-bpm" type="number" min="40" max="240" step="1" value="100">
+        </label>
+        <label>Takt
+            <select id="meter">
+                <option value="2">2/4</option>
+                <option value="3">3/4</option>
+                <option value="4" selected>4/4</option>
+                <option value="5">5/4</option>
+                <option value="6">6/8</option>
+                <option value="7">7/8</option>
+            </select>
+        </label>
+    </div>
+    <div id="plot-container">
+        <canvas id="plot"></canvas>
+        <div id="info">
+            <div id="bpm-display">---</div>
+            <div id="delta-display">warte auf Start</div>
+        </div>
+        <div id="status">bereit</div>
+        <div id="hint">Taktwerk · Web</div>
+    </div>
+</div>
+
+<script>
+'use strict';
+
+// ─── Config ──────────────────────────────────────────────────────
+const SAMPLE_RATE = 44100;
+const BLOCK_SIZE  = 512;
+const MIN_INTERVAL_S = 0.12;
+const FLUX_HISTORY   = 20;
+const THRESHOLD_FACTOR = 4.0;
+const Y_HALF_RANGE   = 20;
+const SMOOTH_N       = 8;
+const BPM_TOLERANCE  = 2.0;
+const BAR_WINDOW     = 4;
+const OUTLIER_BPM    = 15;   // einzelne Schätzungen, die mehr als diesen Wert
+                             // vom letzten Median abweichen, werden verworfen
+
+// ─── FFT (radix-2 Cooley-Tukey) ──────────────────────────────────
+function fft(real, imag) {
+    const n = real.length;
+    if (n <= 1) return;
+    // Bit-reversal permutation
+    let j = 0;
+    for (let i = 1; i < n; i++) {
+        let bit = n >> 1;
+        while (j & bit) { j ^= bit; bit >>= 1; }
+        j ^= bit;
+        if (i < j) {
+            let tr = real[i]; real[i] = real[j]; real[j] = tr;
+            let ti = imag[i]; imag[i] = imag[j]; imag[j] = ti;
+        }
+    }
+    // Butterfly
+    for (let len = 2; len <= n; len <<= 1) {
+        const half = len >> 1;
+        const angleStep = -2 * Math.PI / len;
+        for (let i = 0; i < n; i += len) {
+            for (let k = 0; k < half; k++) {
+                const angle = angleStep * k;
+                const wr = Math.cos(angle), wi = Math.sin(angle);
+                const idx = i + k + half;
+                const tr = real[idx] * wr - imag[idx] * wi;
+                const ti = real[idx] * wi + imag[idx] * wr;
+                real[idx] = real[i+k] - tr;
+                imag[idx] = imag[i+k] - ti;
+                real[i+k] += tr;
+                imag[i+k] += ti;
+            }
+        }
+    }
+}
+function ifft(real, imag) {
+    const n = real.length;
+    for (let i = 0; i < n; i++) imag[i] = -imag[i];
+    fft(real, imag);
+    for (let i = 0; i < n; i++) {
+        real[i] = real[i] / n;
+        imag[i] = -imag[i] / n;
+    }
+}
+
+// ─── Onset Detector (HFC spectral flux) ──────────────────────────
+class OnsetDetector {
+    constructor(blockSize, sampleRate) {
+        this.blockSize  = blockSize;
+        this.sampleRate = sampleRate;
+        this.blockDur   = blockSize / sampleRate;
+        this.nBins      = blockSize / 2 + 1;
+        this.lastOnsetT = 0;
+        this.hfcWeights = new Float32Array(this.nBins);
+        for (let i = 0; i < this.nBins; i++) this.hfcWeights[i] = i;
+        this.window = new Float32Array(blockSize);
+        for (let i = 0; i < blockSize; i++) {
+            this.window[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (blockSize - 1));
+        }
+        this.prevHfc     = new Float32Array(this.nBins);
+        this.fluxHistory = [];
+    }
+
+    process(samples, blockStartT) {
+        const real = new Float32Array(this.blockSize);
+        const imag = new Float32Array(this.blockSize);
+        for (let i = 0; i < this.blockSize; i++) real[i] = samples[i] * this.window[i];
+        fft(real, imag);
+        let flux = 0;
+        for (let i = 0; i < this.nBins; i++) {
+            const mag = Math.sqrt(real[i]*real[i] + imag[i]*imag[i]);
+            const hfc = this.hfcWeights[i] * mag;
+            const diff = hfc - this.prevHfc[i];
+            if (diff > 0) flux += diff;
+            this.prevHfc[i] = hfc;
+        }
+        this.fluxHistory.push(flux);
+        if (this.fluxHistory.length > FLUX_HISTORY) this.fluxHistory.shift();
+        if (this.fluxHistory.length < 5) return null;
+        const sorted = [...this.fluxHistory].sort((a, b) => a - b);
+        const median = sorted[Math.floor(sorted.length / 2)];
+        const threshold = median * THRESHOLD_FACTOR + 1e-6;
+        if (flux > threshold && (blockStartT - this.lastOnsetT) > MIN_INTERVAL_S) {
+            this.lastOnsetT = blockStartT;
+            return blockStartT + this.blockDur / 2;
+        }
+        return null;
+    }
+}
+
+// ─── Beat Tracker (autocorrelation, gauss-weighted) ──────────────
+class BeatTracker {
+    static BIN_SIZE   = 0.010;
+    static WINDOW_S   = 10.0;   // länger = robuster gegen Lücken im Spiel
+    static SEARCH_PCT = 0.30;
+    static MIN_ONSETS = 4;
+
+    constructor(targetBpm) {
+        this.targetBpm    = targetBpm;
+        this.targetPeriod = 60.0 / targetBpm;
+        this.targetBin    = Math.round(this.targetPeriod / BeatTracker.BIN_SIZE);
+        this.lo = Math.round(this.targetPeriod * (1 - BeatTracker.SEARCH_PCT) / BeatTracker.BIN_SIZE);
+        this.hi = Math.round(this.targetPeriod * (1 + BeatTracker.SEARCH_PCT) / BeatTracker.BIN_SIZE);
+        this.sigma  = Math.max(1, (this.hi - this.lo) / 4);
+        this.onsets = [];
+    }
+
+    add(t) {
+        this.onsets.push(t);
+        const cutoff = t - BeatTracker.WINDOW_S;
+        while (this.onsets.length && this.onsets[0] < cutoff) this.onsets.shift();
+        if (this.onsets.length < BeatTracker.MIN_ONSETS) return null;
+        return this.estimate();
+    }
+
+    estimate() {
+        const t0    = this.onsets[0];
+        const tLast = this.onsets[this.onsets.length - 1];
+        const nBins = Math.floor((tLast - t0) / BeatTracker.BIN_SIZE) + 1;
+        if (nBins <= this.hi * 2) return null;
+
+        let nFft = 1;
+        while (nFft < 2 * nBins) nFft *= 2;
+        const real = new Float32Array(nFft);
+        const imag = new Float32Array(nFft);
+        for (const t of this.onsets) {
+            const idx = Math.floor((t - t0) / BeatTracker.BIN_SIZE);
+            if (idx >= 0 && idx < nBins) real[idx] = 1.0;
+        }
+        fft(real, imag);
+        for (let i = 0; i < nFft; i++) {
+            const mag2 = real[i]*real[i] + imag[i]*imag[i];
+            real[i] = mag2; imag[i] = 0;
+        }
+        ifft(real, imag);
+        const lo = Math.max(1, this.lo);
+        const hi = Math.min(nBins, this.hi);
+        if (hi <= lo) return null;
+        let bestVal = -Infinity, bestLag = lo;
+        for (let i = lo; i < hi; i++) {
+            const w = Math.exp(-0.5 * Math.pow((i - this.targetBin) / this.sigma, 2));
+            const score = real[i] * w;
+            if (score > bestVal) { bestVal = score; bestLag = i; }
+        }
+        return 60.0 / (bestLag * BeatTracker.BIN_SIZE);
+    }
+}
+
+// ─── State ───────────────────────────────────────────────────────
+let audioCtx = null, mediaStream = null, scriptNode = null;
+let detector = null, beatTracker = null;
+let recentBpms = [], plotData = [];
+let isRunning = false, onsetCount = 0;
+let actualSampleRate = SAMPLE_RATE;
+
+// ─── Audio Setup ─────────────────────────────────────────────────
+async function startAudio() {
+    if (isRunning) { stopAudio(); return; }
+    try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                echoCancellation: false,
+                noiseSuppression: false,
+                autoGainControl:  false,
+                channelCount: 1
+            }
+        });
+
+        const AC = window.AudioContext || window.webkitAudioContext;
+        audioCtx = new AC({ sampleRate: SAMPLE_RATE, latencyHint: 'interactive' });
+        // iOS Safari may need an explicit resume
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
+        actualSampleRate = audioCtx.sampleRate;
+
+        const source = audioCtx.createMediaStreamSource(mediaStream);
+        scriptNode = audioCtx.createScriptProcessor(BLOCK_SIZE, 1, 1);
+
+        const targetBpm = parseFloat(document.getElementById('target-bpm').value);
+        detector    = new OnsetDetector(BLOCK_SIZE, actualSampleRate);
+        beatTracker = new BeatTracker(targetBpm);
+        recentBpms = []; plotData = []; onsetCount = 0;
+
+        scriptNode.onaudioprocess = (e) => {
+            const samples = e.inputBuffer.getChannelData(0);
+            const now = audioCtx.currentTime;
+            const blockStart = now - BLOCK_SIZE / actualSampleRate;
+            const onsetT = detector.process(samples, blockStart);
+            if (onsetT === null) return;
+            onsetCount++;
+            const bpm = beatTracker.add(onsetT);
+            if (bpm === null) {
+                setStatus(`warming up (${onsetCount} Onsets, ${Math.min(onsetCount*100/8,100)|0}%)`);
+                return;
+            }
+            // Ausreißer-Filter: Schätzungen, die stark vom letzten Median
+            // abweichen, verwerfen (typisch bei Nebenpeak der Autokorrelation)
+            if (recentBpms.length >= 4) {
+                const sorted = [...recentBpms].sort((a, b) => a - b);
+                const med = sorted[Math.floor(sorted.length / 2)];
+                if (Math.abs(bpm - med) > OUTLIER_BPM) return;
+            }
+            recentBpms.push(bpm);
+            if (recentBpms.length > SMOOTH_N) recentBpms.shift();
+            plotData.push([onsetT, bpm]);
+            const meter = parseInt(document.getElementById('meter').value);
+            const cutoffS = BAR_WINDOW * meter * 60 / targetBpm * 1.5;
+            const cutoff  = onsetT - cutoffS;
+            while (plotData.length && plotData[0][0] < cutoff) plotData.shift();
+            setStatus(`${onsetCount} Onsets erkannt`);
+        };
+
+        // Silent gain node so ScriptProcessor produces no feedback through output
+        const silent = audioCtx.createGain();
+        silent.gain.value = 0;
+        source.connect(scriptNode);
+        scriptNode.connect(silent).connect(audioCtx.destination);
+
+        isRunning = true;
+        const btn = document.getElementById('start');
+        btn.textContent = 'Stop';
+        btn.classList.add('running');
+        document.getElementById('target-bpm').disabled = true;
+        document.getElementById('meter').disabled = true;
+        setStatus(`läuft (${actualSampleRate} Hz)`);
+    } catch (err) {
+        alert('Fehler beim Audio-Zugriff: ' + (err.message || err));
+        setStatus('Fehler: ' + (err.message || err));
+    }
+}
+
+function stopAudio() {
+    if (scriptNode) { try { scriptNode.disconnect(); } catch (e) {} scriptNode = null; }
+    if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+    if (audioCtx)   { audioCtx.close(); audioCtx = null; }
+    isRunning = false;
+    const btn = document.getElementById('start');
+    btn.textContent = 'Start';
+    btn.classList.remove('running');
+    document.getElementById('target-bpm').disabled = false;
+    document.getElementById('meter').disabled = false;
+    setStatus('gestoppt');
+}
+
+function setStatus(text) { document.getElementById('status').textContent = text; }
+
+// ─── Rendering ───────────────────────────────────────────────────
+const canvas = document.getElementById('plot');
+function resizeCanvas() {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width  = canvas.clientWidth  * dpr;
+    canvas.height = canvas.clientHeight * dpr;
+}
+window.addEventListener('resize', resizeCanvas);
+window.addEventListener('orientationchange', () => setTimeout(resizeCanvas, 200));
+resizeCanvas();
+
+function render() {
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+
+    const targetBpm = parseFloat(document.getElementById('target-bpm').value);
+    const meter     = parseInt(document.getElementById('meter').value);
+    const windowS   = BAR_WINDOW * meter * 60 / targetBpm;
+
+    // Background tint by current deviation
+    let bg = '#0a0a0a', avg = null, label = '', color = '#888';
+    if (recentBpms.length >= 2) {
+        // Median statt Mean → robust gegen einzelne Ausreißer
+        const slice = [...recentBpms.slice(-SMOOTH_N)].sort((a, b) => a - b);
+        avg = slice[Math.floor(slice.length / 2)];
+        const delta = avg - targetBpm;
+        if (Math.abs(delta) < BPM_TOLERANCE) { bg = '#0d2818'; color = '#80ff80'; label = 'im Tempo'; }
+        else if (delta > 0)                  { bg = '#281818'; color = '#ff8080'; label = 'zu schnell'; }
+        else                                  { bg = '#0d1828'; color = '#80a0ff'; label = 'zu langsam'; }
+    }
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
+
+    // Grid (light)
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 1;
+    for (const bpm of [targetBpm - 10, targetBpm - 5, targetBpm + 5, targetBpm + 10]) {
+        const y = H/2 + (targetBpm - bpm) * H / (2 * Y_HALF_RANGE);
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    }
+
+    // Target line
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([10, 8]);
+    ctx.beginPath(); ctx.moveTo(0, H/2); ctx.lineTo(W, H/2); ctx.stroke();
+    ctx.setLineDash([]);
+
+    // BPM curve
+    if (isRunning && audioCtx && plotData.length >= 1) {
+        const now = audioCtx.currentTime;
+        const xScale = W / windowS;
+        const yScale = H / (2 * Y_HALF_RANGE);
+        ctx.strokeStyle = '#7adbff';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        let first = true;
+        for (const [t, bpm] of plotData) {
+            const x = W + (t - now) * xScale;
+            const y = H/2 + (targetBpm - bpm) * yScale;
+            if (first) { ctx.moveTo(x, y); first = false; } else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        ctx.fillStyle = '#7adbff';
+        for (const [t, bpm] of plotData) {
+            const x = W + (t - now) * xScale;
+            const y = H/2 + (targetBpm - bpm) * yScale;
+            ctx.beginPath(); ctx.arc(x, y, 4, 0, 2 * Math.PI); ctx.fill();
+        }
+    }
+
+    // BPM text
+    const bpmDiv = document.getElementById('bpm-display');
+    const deltaDiv = document.getElementById('delta-display');
+    if (avg !== null) {
+        bpmDiv.textContent = avg.toFixed(1);
+        bpmDiv.style.color = color;
+        deltaDiv.style.color = color;
+        const delta = avg - targetBpm;
+        const sign = delta >= 0 ? '+' : '';
+        deltaDiv.textContent = `Δ ${sign}${delta.toFixed(1)} BPM · ${label}`;
+    } else {
+        bpmDiv.textContent = '---';
+        bpmDiv.style.color = '#888';
+        deltaDiv.style.color = '#888';
+        deltaDiv.textContent = isRunning ? 'warmup …' : 'warte auf Start';
+    }
+
+    requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+
+document.getElementById('start').addEventListener('click', startAudio);
+</script>
+</body>
+</html>
