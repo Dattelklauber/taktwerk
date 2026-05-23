@@ -417,66 +417,90 @@ def run(target_bpm: float, beats_per_bar: int, latency_ms: float = 0.0,
         now = time.monotonic()
         block_start = now - frames / SAMPLE_RATE
         samples = indata[:, 0].astype(np.float32)
+
+        # Periodischer Level-Monitor zum Debuggen
+        peak = float(np.abs(samples).max())
+        if peak > level_state["peak_recent"]:
+            level_state["peak_recent"] = peak
+        level_state["block_count"] += 1
+        if detector._hfc_history:
+            level_state["max_flux"] = max(level_state["max_flux"],
+                                          detector._hfc_history[-1])
+            hfc_med = float(np.median(detector._hfc_history)) if len(detector._hfc_history) >= 5 else 0
+            level_state["max_thresh"] = max(level_state["max_thresh"], hfc_med * 4)
+        if now - level_state["last_print"] > 5.0:
+            print(f"[mon] {level_state['block_count']:>5d} Blöcke, "
+                  f"Peak={level_state['peak_recent']:.3f}, "
+                  f"Max-HFC-Flux={level_state['max_flux']:.0f}, "
+                  f"Max-Thresh={level_state['max_thresh']:.0f}, "
+                  f"Onsets={onset_count}")
+            level_state["peak_recent"] = 0.0
+            level_state["max_flux"] = 0.0
+            level_state["max_thresh"] = 0.0
+            level_state["last_print"] = now
+
         onset_t = detector.process(samples, block_start)
         if onset_t is None or not metro.running:
             return
         onset_t -= latency_s
 
-        if listen:
-            onset_count += 1
-            listen_onsets.append(onset_t)
-            last_dt_ms = ((listen_onsets[-1] - listen_onsets[-2]) * 1000.0
-                          if len(listen_onsets) >= 2 else None)
+        # ─── Vereinheitlicher Auswerte-Pfad ───────────────────────────
+        # Egal ob mit/ohne Count-In: Beat-Tracker macht die BPM-Schätzung
+        # (oder fixe Subdivision falls per CLI vorgegeben). Onsets werden
+        # IMMER geloggt, damit session.json zur Offline-Analyse taugt.
+        onset_count += 1
+        listen_onsets.append(onset_t)
+        last_dt_ms = ((listen_onsets[-1] - listen_onsets[-2]) * 1000.0
+                      if len(listen_onsets) >= 2 else None)
 
-            # Tempo schätzen: BeatTracker (default) oder fixe Subdivision
-            if beat_tracker is not None:
-                bpm = beat_tracker.add(onset_t)
-            elif last_dt_ms is not None:
-                bpm = 60000.0 / (last_dt_ms * subdivision)
-            else:
-                bpm = None
+        if beat_tracker is not None:
+            bpm = beat_tracker.add(onset_t)
+        elif last_dt_ms is not None:
+            bpm = 60000.0 / (last_dt_ms * subdivision)
+        else:
+            bpm = None
 
-            add_event("onset", n=onset_count, onset_t=onset_t,
-                      dt_ms=last_dt_ms, bpm=bpm,
-                      buffer_size=len(beat_tracker.onsets) if beat_tracker else 0)
+        add_event("onset", n=onset_count, onset_t=onset_t,
+                  dt_ms=last_dt_ms, bpm=bpm,
+                  buffer_size=len(beat_tracker.onsets) if beat_tracker else 0)
 
-            if bpm is None:
-                if plot is None:
-                    print(f"#{onset_count:3d} | warming up "
-                          f"({len(listen_onsets)} Onsets, brauche min. 4 + 1 s)")
-                return
-
-            implied_bpms.append(bpm)
-            smoothed = float(np.mean(implied_bpms))
-
-            # Beobachtete Unterteilung (rein informativ) aus period / dt
-            if last_dt_ms is not None:
-                period_ms = 60000.0 / bpm
-                ratio = period_ms / last_dt_ms
-                division = min(DIVISIONS, key=lambda v: abs(v - ratio))
-                if division != last_division:
-                    if last_division is not None:
-                        print(f"[switch] Unterteilung: "
-                              f"{DIVISION_NAMES[last_division]} → "
-                              f"{DIVISION_NAMES[division]}")
-                    last_division = division
-
-            if plot is not None:
-                plot.push(onset_t, smoothed)
-            else:
-                name = DIVISION_NAMES[last_division] if last_division else "----"
-                arrow = "→" if abs(smoothed - target_bpm) < 1 else (
-                        "↑" if smoothed > target_bpm else "↓")
-                print(f"#{onset_count:3d} | dt {last_dt_ms or 0:6.1f} ms | {name} "
-                      f"| BPM {bpm:6.1f} | Mittel {smoothed:6.1f} {arrow} "
-                      f"Soll {target_bpm:g}")
+        if bpm is None:
+            if plot is None:
+                print(f"#{onset_count:3d} | warming up "
+                      f"({len(listen_onsets)} Onsets, brauche min. 4 + 1 s)")
             return
 
-        dev_ms, ist_bpm = analyzer.add_onset(onset_t, metro)
-        soll = metro.bpm
-        ist_str = f"{ist_bpm:5.1f}" if ist_bpm is not None else "  -  "
-        print(f"Soll {soll:5.1f} | Ist {ist_str} | "
-              f"Δ {dev_ms:+6.1f} ms [{analyzer.zone(dev_ms)}]")
+        implied_bpms.append(bpm)
+        smoothed = float(np.mean(implied_bpms))
+
+        # Optional: Phasenabweichung gegen Metronom-Grid (nur informativ
+        # bei Count-In-Modus; in --listen ohne Sinn)
+        dev_str = ""
+        if not listen and last_dt_ms is not None:
+            dev_ms_phase = (onset_t - metro.nearest_expected(onset_t)) * 1000.0
+            dev_str = f" | Δ-Phase {dev_ms_phase:+6.1f} ms [{analyzer.zone(dev_ms_phase)}]"
+
+        # Beobachtete Unterteilung (rein informativ)
+        if last_dt_ms is not None:
+            period_ms = 60000.0 / bpm
+            ratio = period_ms / last_dt_ms
+            division = min(DIVISIONS, key=lambda v: abs(v - ratio))
+            if division != last_division:
+                if last_division is not None:
+                    print(f"[switch] Unterteilung: "
+                          f"{DIVISION_NAMES[last_division]} → "
+                          f"{DIVISION_NAMES[division]}")
+                last_division = division
+
+        if plot is not None:
+            plot.push(onset_t, smoothed)
+        else:
+            name = DIVISION_NAMES[last_division] if last_division else "----"
+            arrow = "→" if abs(smoothed - target_bpm) < 1 else (
+                    "↑" if smoothed > target_bpm else "↓")
+            print(f"#{onset_count:3d} | dt {last_dt_ms or 0:6.1f} ms | {name} "
+                  f"| BPM {bpm:6.1f} | Mittel {smoothed:6.1f} {arrow} "
+                  f"Soll {target_bpm:g}{dev_str}")
 
     def scheduler():
         # Spielt nur den Count-In (N Takte * Schläge/Takt), dann hört auf.
@@ -493,6 +517,20 @@ def run(target_bpm: float, beats_per_bar: int, latency_ms: float = 0.0,
             if not no_click and click is not None:
                 click.play(accent=accent)
         print(f"[countin] {countin_bars} Takt(e) gespielt — ab jetzt nur noch visuell")
+
+    # Audio-Geräte loggen, damit man bei Fehlersuche sieht was eingelesen wird
+    try:
+        default_in = sd.default.device[0]
+        in_info = sd.query_devices(default_in)
+        print(f"[audio] Input device: [{default_in}] {in_info['name']} "
+              f"(SR={int(in_info['default_samplerate'])} Hz, "
+              f"channels={in_info['max_input_channels']})")
+    except Exception as e:
+        print(f"[audio] Konnte Default-Input nicht abfragen: {e}")
+
+    # Periodischer Level-Monitor falls keine Onsets kommen
+    level_state = {"peak_recent": 0.0, "last_print": time.monotonic(),
+                   "block_count": 0, "max_flux": 0.0, "max_thresh": 0.0}
 
     platform_name = "Raspberry Pi" if ON_PI else "dev (Mac/Linux)"
     print("─" * 60)
