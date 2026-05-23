@@ -307,6 +307,22 @@ story.append(P(
 story.append(Image("schematic.png", width=165*mm, height=110*mm))
 story.append(Cap("Schaltplan — Pi-Pin-Belegung aller Module. Genaue Pin-Nummern in den folgenden Tabellen."))
 
+story.append(PageBreak())
+story.append(H2("Verdrahtungs-Diagramm (Fritzing-Stil)"))
+story.append(P(
+    "Stilisierte Ansicht aller Bauteile und ihrer Verbindungen, ohne "
+    "Lochrasterplatine — das ist näher an der realen Verkabelung über "
+    "Jumper-Wires zum GPIO-Header. Wires sind farbcodiert wie auf "
+    "kommerziellen Verkabelungs-Sets: Rot = 5 V, Orange = 3,3 V, "
+    "Schwarz = GND, Lila = I²S-Takt, Blau = SPI MOSI, Grün = SPI SCLK, "
+    "Gelb = Datenleitung."
+))
+story.append(Image("wiring_diagram.png", width=170*mm, height=110*mm))
+story.append(Cap(
+    "Verdrahtungs-Diagramm. Die genauen Pin-Tabellen weiter unten "
+    "enthalten alle Details inkl. der Widerstandswerte am LED-Treiber."
+))
+
 story.append(H2("3.1  I²S-Bus (gemeinsam für Mikro und Verstärker)"))
 i2s = [
     ["Signal", "GPIO (BCM)", "Pin am Pi", "Funktion"],
