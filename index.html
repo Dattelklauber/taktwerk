@@ -132,9 +132,19 @@ canvas { width: 100%; height: 100%; display: block; }
         <div class="row">
             <button id="add-marker" class="marker">+ Marker</button>
             <span>Marker: <span id="marker-count" class="badge">0</span></span>
-            <button id="export-log">Log exportieren</button>
+            <button id="export-log">Log teilen / herunterladen</button>
             <button id="clear-log">Log löschen</button>
             <span id="log-info" class="badge">0 Events</span>
+        </div>
+        <div id="log-fallback" style="display:none">
+            <div style="color:#888;font-size:12px;margin:6px 0">
+                Falls Teilen/Download nicht klappt — lange auf das Textfeld tippen,
+                „Alles auswählen" → „Kopieren". Dann in Mail/Notes einfügen.
+            </div>
+            <textarea id="log-textarea" readonly
+                style="width:100%;height:120px;background:#0a0a0a;color:#7adbff;
+                       border:1px solid #333;padding:8px;font-family:ui-monospace,monospace;
+                       font-size:11px;border-radius:4px;resize:vertical"></textarea>
         </div>
     </div>
 </div>
@@ -329,7 +339,7 @@ function addMarker() {
     logEvent('marker', { n: diag.markerCount });
     document.getElementById('marker-count').textContent = diag.markerCount;
 }
-function exportLog() {
+async function exportLog() {
     const sessionInfo = {
         userAgent: navigator.userAgent,
         sampleRate: actualSampleRate,
@@ -338,16 +348,34 @@ function exportLog() {
         meter: parseInt(document.getElementById('meter').value),
         timestamp: new Date().toISOString(),
     };
-    const blob = new Blob(
-        [JSON.stringify({ session: sessionInfo, log: diag.log }, null, 2)],
-        { type: 'application/json' }
-    );
+    const json = JSON.stringify({ session: sessionInfo, log: diag.log }, null, 2);
+    const filename = `taktwerk-log-${Date.now()}.json`;
+    const blob = new Blob([json], { type: 'application/json' });
+    const file = new File([blob], filename, { type: 'application/json' });
+
+    // Bevorzugt: iOS/iPadOS Share-Sheet (mit AirDrop, Mail, Files, …)
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+            await navigator.share({ files: [file], title: 'Taktwerk Log',
+                                    text: `${diag.log.length} Events` });
+            return;
+        } catch (e) {
+            if (e.name === 'AbortError') return;  // User hat Share abgebrochen
+            // sonst weiter zum Download-Fallback
+        }
+    }
+
+    // Fallback: klassischer Browser-Download (für Desktop oder ältere iOS)
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url;
-    a.download = `taktwerk-log-${Date.now()}.json`;
+    a.href = url; a.download = filename;
     document.body.appendChild(a); a.click();
     setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 100);
+
+    // Zusätzlicher Fallback: Log auch ins Textarea-Element schreiben,
+    // damit der User es notfalls von Hand kopieren kann
+    document.getElementById('log-textarea').value = json;
+    document.getElementById('log-fallback').style.display = 'block';
 }
 function clearLog() {
     diag.log = []; diag.markerCount = 0; diag.rejectedCount = 0;
