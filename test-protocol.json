@@ -9,7 +9,7 @@
       "duration_s": 5.0
     },
     {
-      "label": "01 Hi-Hat 100 BPM Viertel (16 Schläge)",
+      "label": "01 Kick 100 BPM Viertel (16 Schläge)",
       "start_s": 5.0,
       "end_s": 14.6,
       "duration_s": 9.6
@@ -21,7 +21,7 @@
       "duration_s": 3.0
     },
     {
-      "label": "03 Hi-Hat 100 BPM Achtel (32 Schläge)",
+      "label": "03 Snare 100 BPM Achtel (32 Schläge)",
       "start_s": 17.6,
       "end_s": 36.8,
       "duration_s": 19.2
@@ -45,7 +45,7 @@
       "duration_s": 3.0
     },
     {
-      "label": "07 Hi-Hat 80 BPM Viertel (12 Schläge)",
+      "label": "07 Kick 80 BPM Viertel (12 Schläge)",
       "start_s": 81.2,
       "end_s": 90.2,
       "duration_s": 9.0
@@ -57,7 +57,7 @@
       "duration_s": 3.0
     },
     {
-      "label": "09 Hi-Hat 120 BPM Viertel (20 Schläge)",
+      "label": "09 Kick 120 BPM Viertel (20 Schläge)",
       "start_s": 93.2,
       "end_s": 103.2,
       "duration_s": 10.0
