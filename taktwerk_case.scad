@@ -14,37 +14,50 @@ case_d        = 32;      // Höhe (mm) — Display-Tiefe
 wall          = 2.0;     // Wandstärke
 corner_r      = 4;       // Eckenrundung
 
+// Layout (Aufsicht Frontseite, Maße in mm):
+//
+//   y=75 ┌────────────────────────────────────────────┐
+//        │                                            │
+//   60   │   [  Display 32×42  ]      ◉ Lautsprecher  │
+//        │                              (Wabengrill)  │
+//   40   │   ● LED      ▭ Mic-Schlitz                 │
+//        │                                            │
+//   20   │   ⊙ Encoder    ⬜ TAP     ⬜ ▶ Start       │
+//    0   └────────────────────────────────────────────┘
+//        0      30      60      90      120         140
+
 // ─── Display-Ausschnitt (ST7789 2.0") ─────────────────────
 display_w     = 32;
 display_h     = 42;
-display_x     = 30;      // Position vom linken Rand
-display_y     = 17;      // vom unteren Rand
+display_x     = 10;
+display_y     = 30;
 
-// ─── Bedienelemente ──────────────────────────────────────
-encoder_x     = 110;
-encoder_y     = 55;
+// ─── Bedienelemente (Unterzeile) ──────────────────────────
+encoder_x     = 15;
+encoder_y     = 10;
 encoder_dia   = 7;
 
-button1_x     = 95;
-button1_y     = 20;
+button1_x     = 50;
+button1_y     = 10;
 button_dia    = 12.5;
 
-button2_x     = 122;
-button2_y     = 20;
+button2_x     = 85;
+button2_y     = 10;
 
-led_x         = 122;
-led_y         = 45;
+// ─── LED ──────────────────────────────────────────────────
+led_x         = 15;
+led_y         = 20;
 led_dia       = 5.3;
 
-// ─── Lautsprecher ────────────────────────────────────────
-speaker_x     = 22;
+// ─── Lautsprecher (Wabenmuster) ──────────────────────────
+speaker_x     = 100;
 speaker_y     = 55;
-speaker_dia   = 35;
+speaker_dia   = 30;
 grille_hole_d = 2.4;
 
 // ─── Mikrofon-Schlitz ────────────────────────────────────
-mic_x         = 95;
-mic_y         = 60;
+mic_x         = 35;
+mic_y         = 20;
 mic_slot_w    = 10;
 mic_slot_h    = 3;
 
@@ -75,41 +88,52 @@ module rounded_box(w, h, d, r) {
         translate([x, y, 0]) cylinder(r=r, h=d);
 }
 
-module hex_grille(diameter, hole_d, depth) {
-    // Wabenmuster aus runden Löchern, kreisförmig begrenzt
-    pitch = hole_d * 1.8;
-    n = ceil(diameter / pitch);
-    for (i = [-n:n], j = [-n:n]) {
-        x = i * pitch + (j%2==0 ? 0 : pitch/2);
-        y = j * pitch * 0.866;  // sqrt(3)/2
-        if (sqrt(x*x + y*y) < diameter/2 - hole_d/2)
-            translate([x, y, -0.1])
-                cylinder(d=hole_d, h=depth+0.2, $fn=16);
+module speaker_holes(diameter, depth) {
+    // Konzentrische Ring-Anordnung — funktioniert zuverlässig in OpenSCAD,
+    // wirkt visuell auch als „Wabengitter"
+    hole_d = 3;
+    // Zentralbohrung
+    translate([0, 0, -0.1]) cylinder(d=hole_d, h=depth+0.2);
+    // Ring 1: 6 Löcher bei 6 mm Radius
+    for (angle = [0:60:359])
+        translate([6 * cos(angle), 6 * sin(angle), -0.1])
+            cylinder(d=hole_d, h=depth+0.2);
+    // Ring 2: 12 Löcher bei 10.5 mm Radius
+    for (angle = [0:30:359])
+        translate([10.5 * cos(angle), 10.5 * sin(angle), -0.1])
+            cylinder(d=hole_d, h=depth+0.2);
+    // Ring 3: 18 Löcher bei 14 mm Radius (nur wenn diameter erlaubt)
+    if (diameter >= 30) {
+        for (angle = [0:20:359])
+            translate([14 * cos(angle), 14 * sin(angle), -0.1])
+                cylinder(d=hole_d, h=depth+0.2);
     }
 }
 
 module pipe_clamp() {
     // Vertikales Rohr (Z-Achse) wird umschlossen.
     // Klemmschraube zieht Schlitz horizontal zu.
-    pcw = pipe_outer + 6;    // Breite quer zum Rohr
-    pcl = pipe_outer + 12;   // Länge in Schraub-Richtung
+    pcw = pipe_outer + 8;    // Breite quer zum Rohr
+    pcl = pipe_outer + 16;   // Länge in Schraub-Richtung
     difference() {
-        translate([-pcl/2, -pcw/2, 0])
+        translate([-pcl/2, 0, 0])
             cube([pcl, pcw, clamp_length]);
-        // Rohr-Loch
-        translate([0, 0, -1])
+        // Rohr-Loch vertikal in der Mitte
+        translate([0, pcw/2, -1])
             cylinder(d=pipe_inner, h=clamp_length+2);
-        // Schlitz quer durch (auf der Rohr-zugewandten Seite)
-        translate([-clamp_slit/2, -pcw/2-1, -1])
-            cube([clamp_slit, pcw/2, clamp_length+2]);
+        // Schlitz: GANZE Strecke vom Rohr durch die hintere Hälfte hinaus.
+        // So sind die beiden Hälften wirklich getrennt und können sich
+        // durch die Schraube zusammenziehen.
+        translate([-clamp_slit/2, pcw/2, -1])
+            cube([clamp_slit, pcw/2 + 1, clamp_length+2]);
         // Klemmschraube — horizontal durch beide Hälften
-        translate([-pcl/2-1, 0, clamp_length/2])
+        translate([-pcl/2-1, pcw-4, clamp_length/2])
             rotate([0, 90, 0])
                 cylinder(d=m4_screw_dia, h=pcl+2);
-        // Senkkopf-Aussparung für M4 außen
-        translate([pcl/2-3, 0, clamp_length/2])
+        // Senkkopf-Aussparung für M4
+        translate([pcl/2-4, pcw-4, clamp_length/2])
             rotate([0, 90, 0])
-                cylinder(d=m4_head_dia, h=4);
+                cylinder(d=m4_head_dia, h=5);
     }
 }
 
@@ -119,14 +143,17 @@ module main_case() {
         union() {
             // Außenform
             rounded_box(case_w, case_h, case_d, corner_r);
-            // Hi-Hat-Klemme an der Rückseite (oberer Rand)
-            translate([case_w/2, case_h + pipe_outer/2 - 3, 0])
+            // Hi-Hat-Klemme an der Rückseite — Klemmen-Body ragt nach +Y
+            // (weg von der Frontseite) heraus. Slot+Schraube hinten.
+            translate([case_w/2, case_h - 4, 0])
                 pipe_clamp();
         }
 
-        // Innen-Hohlraum (oben offen für Deckel)
-        translate([wall, wall, wall])
-            rounded_box(case_w - 2*wall, case_h - 2*wall, case_d, corner_r-0.5);
+        // Innen-Hohlraum: oben (Z=case_d-wall) bleibt eine Wand mit Cutouts,
+        // unten (Z<0) offen, damit Elektronik von unten eingesetzt werden kann
+        translate([wall, wall, -1])
+            rounded_box(case_w - 2*wall, case_h - 2*wall,
+                        case_d - wall + 1, corner_r-0.5);
 
         // ── Display-Ausschnitt (Frontseite, hier oben in Druck-Lage) ──
         translate([display_x, display_y, case_d - wall - 0.1])
@@ -151,7 +178,7 @@ module main_case() {
 
         // ── Lautsprecher-Grill ──
         translate([speaker_x, speaker_y, case_d - wall - 0.1])
-            hex_grille(diameter=speaker_dia, hole_d=grille_hole_d, depth=wall);
+            speaker_holes(diameter=speaker_dia, depth=wall);
 
         // ── Mikrofon-Schlitz ──
         translate([mic_x-mic_slot_w/2, mic_y-mic_slot_h/2, case_d-wall-0.1])
