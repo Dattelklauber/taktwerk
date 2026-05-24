@@ -89,24 +89,22 @@ module rounded_box(w, h, d, r) {
 }
 
 module speaker_holes(diameter, depth) {
-    // Konzentrische Ring-Anordnung — funktioniert zuverlässig in OpenSCAD,
-    // wirkt visuell auch als „Wabengitter"
+    // Konzentrische Ring-Anordnung. Zylinder ragen 1 mm über die Wand
+    // hinaus auf beiden Seiten → vermeidet Z-Fighting beim Rendern.
     hole_d = 3;
-    // Zentralbohrung
-    translate([0, 0, -0.1]) cylinder(d=hole_d, h=depth+0.2);
-    // Ring 1: 6 Löcher bei 6 mm Radius
+    h = depth + 2;     // 1 mm Überstand jeweils
+    z = -1;
+    translate([0, 0, z]) cylinder(d=hole_d, h=h);
     for (angle = [0:60:359])
-        translate([6 * cos(angle), 6 * sin(angle), -0.1])
-            cylinder(d=hole_d, h=depth+0.2);
-    // Ring 2: 12 Löcher bei 10.5 mm Radius
+        translate([6 * cos(angle), 6 * sin(angle), z])
+            cylinder(d=hole_d, h=h);
     for (angle = [0:30:359])
-        translate([10.5 * cos(angle), 10.5 * sin(angle), -0.1])
-            cylinder(d=hole_d, h=depth+0.2);
-    // Ring 3: 18 Löcher bei 14 mm Radius (nur wenn diameter erlaubt)
+        translate([10.5 * cos(angle), 10.5 * sin(angle), z])
+            cylinder(d=hole_d, h=h);
     if (diameter >= 30) {
         for (angle = [0:20:359])
-            translate([14 * cos(angle), 14 * sin(angle), -0.1])
-                cylinder(d=hole_d, h=depth+0.2);
+            translate([14 * cos(angle), 14 * sin(angle), z])
+                cylinder(d=hole_d, h=h);
     }
 }
 
